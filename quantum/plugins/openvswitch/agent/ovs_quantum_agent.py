@@ -151,7 +151,8 @@ class OVSQuantumAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin):
 
     def __init__(self, integ_br, tun_br, local_ip,
                  bridge_mappings, root_helper,
-                 polling_interval, enable_tunneling):
+                 polling_interval, enable_tunneling,
+                 domu_integ_br=None, domu_root_helper=None):
         '''Constructor.
 
         :param integ_br: name of the integration bridge.
@@ -161,12 +162,17 @@ class OVSQuantumAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin):
         :param root_helper: utility to use when running shell cmds.
         :param polling_interval: interval (secs) to poll DB.
         :param enable_tunneling: if True enable GRE networks.
+        :param domu_integ_br: optional, name of the domU integration bridge.
+        :param domu_root_helper: optional, utility to use when running domU
+                                 shell cmds.
         '''
         self.root_helper = root_helper
         self.available_local_vlans = set(
             xrange(OVSQuantumAgent.MIN_VLAN_TAG,
                    OVSQuantumAgent.MAX_VLAN_TAG))
         self.int_br = self.setup_integration_br(integ_br)
+        self.domu_int_br = self.setup_domu_integration_br(domu_integ_br,
+                                                          domu_root_helper)
         self.setup_physical_bridges(bridge_mappings)
         self.local_vlan_map = {}
 
@@ -448,11 +454,10 @@ class OVSQuantumAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin):
                                      dl_dst=port.vif_mac,
                                      actions="mod_vlan_vid:%s,normal" %
                                      lvm.vlan)
-
-        self.int_br.set_db_attribute("Port", port.port_name, "tag",
-                                     str(lvm.vlan))
+        bridge = port.switch
+        bridge.set_db_attribute("Port", port.port_name, "tag", str(lvm.vlan))
         if int(port.ofport) != -1:
-            self.int_br.delete_flows(in_port=port.ofport)
+            bridge.delete_flows(in_port=port.ofport)
 
     def port_unbound(self, vif_id, net_uuid=None):
         '''Unbind port.
@@ -490,9 +495,15 @@ class OVSQuantumAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin):
 
         :param port: a ovs_lib.VifPort object.
         '''
-        self.int_br.set_db_attribute("Port", port.port_name, "tag",
-                                     DEAD_VLAN_TAG)
-        self.int_br.add_flow(priority=2, in_port=port.ofport, actions="drop")
+        bridge = port.switch
+        bridge.set_db_attribute("Port", port.port_name, "tag", DEAD_VLAN_TAG)
+        bridge.add_flow(priority=2, in_port=port.ofport, actions="drop")
+
+    def setup_bridge(self, bridge):
+        """Perform bridge setup common to all bridges."""
+        bridge.remove_all_flows()
+        # switch all traffic using L2 learning
+        bridge.add_flow(priority=1, actions="normal")
 
     def setup_integration_br(self, bridge_name):
         '''Setup the integration bridge.
@@ -504,10 +515,19 @@ class OVSQuantumAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin):
         '''
         int_br = ovs_lib.OVSBridge(bridge_name, self.root_helper)
         int_br.delete_port(cfg.CONF.OVS.int_peer_patch_port)
-        int_br.remove_all_flows()
-        # switch all traffic using L2 learning
-        int_br.add_flow(priority=1, actions="normal")
+        self.setup_bridge(int_br)
         return int_br
+
+    def setup_domu_integration_br(self, bridge_name, root_helper):
+        '''Setup the domU integration bridge.
+
+        :param bridge_name: the name of the domU integration bridge
+        :param root_helper: the name of the domU root helper
+        '''
+        if bridge_name:
+            bridge = ovs_lib.OVSBridge(bridge_name, root_helper)
+            self.setup_bridge(bridge)
+            return bridge
 
     def setup_tunnel_br(self, tun_br):
         '''Setup the tunnel bridge.
@@ -586,8 +606,35 @@ class OVSQuantumAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin):
             int_veth.link.set_up()
             phys_veth.link.set_up()
 
+    def get_domu_mac_addresses(self):
+        """Retrieve a set of the mac addresses of ports on the domU bridge.
+
+        For performance reasons, retrieve the mac addresses once and cache
+        them forever.
+        """
+        if not hasattr(self, '_domu_mac_addresses'):
+            mac_addresses = None
+            if self.domu_int_br:
+                mac_addresses = set(self.domu_int_br.get_port_macs())
+            self._domu_mac_addresses = mac_addresses
+        return self._domu_mac_addresses
+
+    def get_all_ports_set(self):
+        """Return a set of ports for all configured bridges."""
+        # Ignore ports on the primary bridge that have mac addresses
+        # present on the domU bridge (if configured).  An interface
+        # between the domU and dom0 bridges won't be known to Quantum
+        # and needs to remain unmodified to be able to trunk traffic.
+        ignored_macs = self.get_domu_mac_addresses()
+        ports = [(self.int_br, x) for x in
+                 self.int_br.get_vif_port_set(ignored_macs=ignored_macs)]
+        if self.domu_int_br:
+            ports += [(self.domu_int_br, x)
+                      for x in self.domu_int_br.get_vif_port_set()]
+        return set(ports)
+
     def update_ports(self, registered_ports):
-        ports = self.int_br.get_vif_port_set()
+        ports = self.get_all_ports_set()
         if ports == registered_ports:
             return
         added = ports - registered_ports
@@ -610,8 +657,9 @@ class OVSQuantumAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin):
     def treat_devices_added(self, devices):
         resync = False
         self.sg_agent.prepare_devices_filter(devices)
-        for device in devices:
-            LOG.info(_("Port %s added"), device)
+        for bridge, device in devices:
+            LOG.info(_("Port %(device)s added to bridge %(bridge)s"),
+                     dict(device=device, bridge=bridge.br_name))
             try:
                 details = self.plugin_rpc.get_device_details(self.context,
                                                              device,
@@ -622,7 +670,7 @@ class OVSQuantumAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin):
                           {'device': device, 'e': e})
                 resync = True
                 continue
-            port = self.int_br.get_vif_port_by_id(details['device'])
+            port = bridge.get_vif_port_by_id(details['device'])
             if 'port_id' in details:
                 LOG.info(_("Port %(device)s updated. Details: %(details)s"),
                          {'device': device, 'details': details})
@@ -641,8 +689,9 @@ class OVSQuantumAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin):
     def treat_devices_removed(self, devices):
         resync = False
         self.sg_agent.remove_devices_filter(devices)
-        for device in devices:
-            LOG.info(_("Attachment %s removed"), device)
+        for bridge, device in devices:
+            LOG.info(_("Port %(port)s removed from bridge %(bridge)s"),
+                     dict(port=device, bridge=bridge.br_name))
             try:
                 details = self.plugin_rpc.update_device_down(self.context,
                                                              device,
@@ -750,6 +799,8 @@ def create_agent_config_map(config):
         root_helper=config.AGENT.root_helper,
         polling_interval=config.AGENT.polling_interval,
         enable_tunneling=config.OVS.enable_tunneling,
+        domu_integ_br=config.OVS.domu_integration_bridge,
+        domu_root_helper=config.AGENT.domu_root_helper,
     )
 
     if kwargs['enable_tunneling'] and not kwargs['local_ip']:

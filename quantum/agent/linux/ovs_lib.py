@@ -242,11 +242,20 @@ class OVSBridge:
 
         return edge_ports
 
-    def get_vif_port_set(self):
+    def get_vif_port_set(self, ignored_macs=None):
+        """Retrieve the set of interface ids for all managed ports.
+
+        :param ignored_macs: Optional, a list of mac addresses.  An interface
+                             with a mac in the ignore list will not have its
+                             id returned by this function.
+        """
         edge_ports = set()
         port_names = self.get_port_name_list()
         for name in port_names:
             external_ids = self.db_get_map("Interface", name, "external_ids")
+            if (ignored_macs and
+                    external_ids.get('attached-mac') in ignored_macs):
+                continue
             if "iface-id" in external_ids and "attached-mac" in external_ids:
                 edge_ports.add(external_ids['iface-id'])
             elif ("xs-vif-uuid" in external_ids and
@@ -292,6 +301,18 @@ class OVSBridge:
         else:
             msg = _('Unable to determine mac address for %s') % self.br_name
             raise Exception(msg)
+
+    def get_port_macs(self):
+        """Retrieve macs for ports attached to the bridge.
+
+        If a given port is not up, its mac will not be returned.
+        """
+        macs = []
+        for port_name in self.get_port_name_list():
+            address = ip_lib.IPDevice(port_name, self.root_helper).link.address
+            if address:
+                macs.append(address)
+        return macs
 
 
 def get_bridge_for_iface(root_helper, iface):

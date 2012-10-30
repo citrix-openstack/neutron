@@ -70,14 +70,20 @@ class TestOvsQuantumAgent(base.BaseTestCase):
             self.agent.tun_br = mock.Mock()
         self.agent.sg_agent = mock.Mock()
 
+    def get_mock_devices(self, bridge=None):
+        if not bridge:
+            bridge = mock.Mock()
+        return [(bridge, {})]
+
     def _mock_port_bound(self, ofport=None):
         port = mock.Mock()
         port.ofport = ofport
-        net_uuid = 'my-net-uuid'
-        with mock.patch.object(self.agent.int_br,
-                               'delete_flows') as delete_flows_func:
-            self.agent.port_bound(port, net_uuid, 'local', None, None)
-        self.assertEqual(delete_flows_func.called, ofport != -1)
+        self.agent.port_bound(port, 'net-uuid', 'local', None, None)
+        expected_calls = [
+            mock.call.set_db_attribute('Port', port.port_name, 'tag', '1')]
+        if ofport != -1:
+            expected_calls.append(mock.call.delete_flows(in_port=ofport))
+        port.switch.assert_has_calls(expected_calls)
 
     def test_port_bound_deletes_flows_for_valid_ofport(self):
         self._mock_port_bound(ofport=1)
@@ -86,10 +92,14 @@ class TestOvsQuantumAgent(base.BaseTestCase):
         self._mock_port_bound(ofport=-1)
 
     def test_port_dead(self):
-        with mock.patch.object(self.agent.int_br,
-                               'add_flow') as add_flow_func:
-            self.agent.port_dead(mock.Mock())
-        self.assertTrue(add_flow_func.called)
+        port = mock.Mock()
+        self.agent.port_dead(port)
+        port.switch.assert_has_calls([
+            mock.call.set_db_attribute('Port', port.port_name, 'tag',
+                                       mock.ANY),
+            mock.call.add_flow(priority=2, in_port=port.ofport,
+                               actions='drop'),
+        ])
 
     def mock_update_ports(self, vif_port_set=None, registered_ports=None):
         with mock.patch.object(self.agent.int_br, 'get_vif_port_set',
@@ -97,19 +107,23 @@ class TestOvsQuantumAgent(base.BaseTestCase):
             return self.agent.update_ports(registered_ports)
 
     def test_update_ports_returns_none_for_unchanged_ports(self):
-        self.assertIsNone(self.mock_update_ports())
+        self.assertIsNone(self.mock_update_ports(set(), set()))
 
     def test_update_ports_returns_port_changes(self):
+        bridge = self.agent.int_br
         vif_port_set = set([1, 3])
-        registered_ports = set([1, 2])
-        expected = dict(current=vif_port_set, added=set([3]), removed=set([2]))
+        registered_ports = set((bridge, x) for x in [1, 2])
+        expected = dict(current=set((bridge, x) for x in vif_port_set),
+                        added=set([(bridge, 3)]),
+                        removed=set([(bridge, 2)]))
         actual = self.mock_update_ports(vif_port_set, registered_ports)
         self.assertEqual(expected, actual)
 
     def test_treat_devices_added_returns_true_for_missing_device(self):
         with mock.patch.object(self.agent.plugin_rpc, 'get_device_details',
                                side_effect=Exception()):
-            self.assertTrue(self.agent.treat_devices_added([{}]))
+            devices = self.get_mock_devices()
+            self.assertTrue(self.agent.treat_devices_added(devices))
 
     def _mock_treat_devices_added(self, details, port, func_name):
         """Mock treat devices added.
@@ -119,14 +133,16 @@ class TestOvsQuantumAgent(base.BaseTestCase):
         :param func_name: the function that should be called
         :returns: whether the named function was called
         """
+        bridge = mock.Mock()
         with contextlib.nested(
             mock.patch.object(self.agent.plugin_rpc, 'get_device_details',
                               return_value=details),
-            mock.patch.object(self.agent.int_br, 'get_vif_port_by_id',
+            mock.patch.object(bridge, 'get_vif_port_by_id',
                               return_value=port),
             mock.patch.object(self.agent, func_name)
         ) as (get_dev_fn, get_vif_func, func):
-            self.assertFalse(self.agent.treat_devices_added([{}]))
+            devices = self.get_mock_devices(bridge=bridge)
+            self.assertFalse(self.agent.treat_devices_added(devices))
         return func.called
 
     def test_treat_devices_added_ignores_invalid_ofport(self):
@@ -151,14 +167,16 @@ class TestOvsQuantumAgent(base.BaseTestCase):
     def test_treat_devices_removed_returns_true_for_missing_device(self):
         with mock.patch.object(self.agent.plugin_rpc, 'update_device_down',
                                side_effect=Exception()):
-            self.assertTrue(self.agent.treat_devices_removed([{}]))
+            devices = self.get_mock_devices()
+            self.assertTrue(self.agent.treat_devices_removed(devices))
 
     def _mock_treat_devices_removed(self, port_exists):
         details = dict(exists=port_exists)
         with mock.patch.object(self.agent.plugin_rpc, 'update_device_down',
                                return_value=details):
             with mock.patch.object(self.agent, 'port_unbound') as port_unbound:
-                self.assertFalse(self.agent.treat_devices_removed([{}]))
+                devices = self.get_mock_devices()
+                self.assertFalse(self.agent.treat_devices_removed(devices))
         self.assertEqual(port_unbound.called, not port_exists)
 
     def test_treat_devices_removed_unbinds_port(self):
@@ -285,3 +303,51 @@ class TestOvsQuantumAgent(base.BaseTestCase):
             lvm.vif_ports = {"vif1": mock.Mock()}
             self.agent.port_unbound("vif3", "netuid12345")
             self.assertEqual(reclvl_fn.call_count, 2)
+
+    def test_setup_domu_integration_br_returns_none_for_missing_name(self):
+        self.assertIsNone(self.agent.setup_domu_integration_br(None, None))
+
+    def test_setup_domu_integration_br_succeeds(self):
+        with mock.patch.object(self.agent, 'setup_bridge'):
+            self.assertTrue(self.agent.setup_domu_integration_br('foo', None))
+
+    def test_get_domu_mac_addresses_returns_none_for_missing_domu_bridge(self):
+        self.assertIsNone(self.agent.get_domu_mac_addresses())
+
+    def test_domu_mac_addresses_returns_addresses_for_domu_bridge(self):
+        port_macs = ['ff:fe:00:00:00:00', 'ff:ff:00:00:00:00']
+        expected = set(port_macs)
+        self.agent.domu_int_br = mock.Mock()
+        with mock.patch.object(self.agent.domu_int_br, 'get_port_macs',
+                               return_value=port_macs):
+            actual = self.agent.get_domu_mac_addresses()
+        self.assertEqual(actual, expected)
+
+    def test_domu_mac_addresses_returns_cached_result(self):
+        self.test_domu_mac_addresses_returns_addresses_for_domu_bridge()
+        # This call would fail due to lack of mocking if the result
+        # was not cached.
+        self.assertTrue(self.agent.get_domu_mac_addresses())
+
+    def test_get_all_ports_set_succeeds_for_int_br(self):
+        ports = set([1, 2])
+        expected = set((self.agent.int_br, x) for x in ports)
+        with mock.patch.object(self.agent.int_br, 'get_vif_port_set',
+                               return_value=ports):
+            actual = self.agent.get_all_ports_set()
+        self.assertEqual(actual, expected)
+
+    def test_get_all_ports_succeeds_for_domu_int_br(self):
+        ports = set([1, 2])
+        self.agent.domu_int_br = mock.Mock()
+        bridges = [self.agent.int_br, self.agent.domu_int_br]
+        expected = set((bridge, port) for bridge in bridges for port in ports)
+        with mock.patch.object(self.agent, 'get_domu_mac_addresses',
+                               return_value=None):
+            with mock.patch.object(self.agent.int_br, 'get_vif_port_set',
+                                   return_value=ports):
+                with mock.patch.object(self.agent.domu_int_br,
+                                       'get_vif_port_set',
+                                       return_value=ports):
+                    actual = self.agent.get_all_ports_set()
+        self.assertEqual(actual, expected)

@@ -27,6 +27,8 @@ DEFAULT_TUNNEL_RANGES = []
 ovs_opts = [
     cfg.StrOpt('integration_bridge', default='br-int',
                help=_("Integration bridge to use")),
+    cfg.StrOpt('domu_integration_bridge', default='',
+               help=_("Integration bridge to use in XS/XCP DomU")),
     cfg.BoolOpt('enable_tunneling', default=False,
                 help=_("Enable tunneling support")),
     cfg.StrOpt('tunnel_bridge', default='br-tun',
@@ -58,6 +60,8 @@ agent_opts = [
     cfg.IntOpt('polling_interval', default=2,
                help=_("The number of seconds the agent will wait between "
                       "polling for local device changes.")),
+    cfg.StrOpt('domu_root_helper', default='sudo',
+               help=_("Root helper application for XenServer/XCP DomU.")),
 ]
 
 

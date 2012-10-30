@@ -81,6 +81,7 @@ class TunnelTest(base.BaseTestCase):
 
         self.mox.StubOutClassWithMocks(ovs_lib, 'OVSBridge')
         self.mock_int_bridge = ovs_lib.OVSBridge(self.INT_BRIDGE, 'sudo')
+        VIF_PORT.switch = self.mock_int_bridge
         self.mock_int_bridge.delete_port('patch-tun')
         self.mock_int_bridge.remove_all_flows()
         self.mock_int_bridge.add_flow(priority=1, actions='normal')

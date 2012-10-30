@@ -357,3 +357,36 @@ class OVS_Lib_Test(base.BaseTestCase):
                         return_value=mock.Mock(address=None)):
             with testtools.ExpectedException(Exception):
                 self.br.get_local_port_mac()
+
+    def mock_get_vif_port_set(self, expected, ignored_macs):
+        with mock.patch.object(self.br, 'get_port_name_list',
+                               return_value=['1']):
+            external_ids = {
+                'attached-mac': 'foo',
+                'iface-id': 'my-iface-id',
+            }
+            with mock.patch.object(self.br, 'db_get_map',
+                                   return_value=external_ids):
+                actual = self.br.get_vif_port_set(ignored_macs=ignored_macs)
+        self.assertEqual(actual, expected)
+
+    def test_get_vif_port_set_filters_ignored_mac(self):
+        self.mock_get_vif_port_set(expected=set(), ignored_macs=['foo'])
+
+    def test_get_vif_port_set_does_not_filter_non_ignored_mac(self):
+        self.mock_get_vif_port_set(expected=set(['my-iface-id']),
+                                   ignored_macs=['foo2'])
+
+    def mock_get_port_macs(self, expected, mac):
+        with mock.patch.object(self.br, 'get_port_name_list',
+                               return_value=['foo']):
+            with mock.patch('quantum.agent.linux.ip_lib.IpLinkCommand',
+                            return_value=mock.Mock(address=None)):
+                self.assertEqual(self.br.get_port_macs(), [])
+
+    def test_get_port_macs_skips_missing_mac(self):
+        self.mock_get_port_macs(expected=[], mac=None)
+
+    def test_get_port_macs_returns_mac(self):
+        mac = 'ff:ff:00:00:00:00'
+        self.mock_get_port_macs(expected=[mac], mac=mac)
