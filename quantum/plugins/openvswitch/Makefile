@@ -3,7 +3,7 @@ PHONY: help
 
 AGENT_DIST_DIR=ovs_quantum_agent
 AGENT_DIST_TARBALL=ovs_quantum_agent.tgz
-VERSION=$(shell python -c "import sys ; sys.path.append('../../../quantum/') ; import version ; print version.canonical_version_string()")
+VERSION=$(shell python2.6 -c "import sys ; sys.path.append('../../..') ; from quantum.version import version_info; print version_info.canonical_version_string()")
 XAPI_PLUGINS_DIR=$(AGENT_DIST_DIR)/build/ovs-quantum-agent-$(VERSION)/etc/xapi.d/plugins
 RPM_BUILD_ROOT=$(AGENT_DIST_DIR)/build/rpm
 
@@ -15,7 +15,7 @@ agent-dist-xen:QUANTUM_LIBS=$(AGENT_DIST_DIR)/build/ovs-quantum-agent-$(VERSION)
 agent-dist-xen-python26:QUANTUM_LIBS=$(AGENT_DIST_DIR)/build/ovs-quantum-agent-$(VERSION)/usr/lib/python2.6/site-packages
 
 agent-dist-xen agent-dist-xen-python26: distclean
-	yum --enablerepo=base install rpm-build
+	yum -qy --enablerepo=base install rpm-build
 	mkdir -p $(XAPI_PLUGINS_DIR)
 	mkdir -p $(QUANTUM_LIBS)/{quantum/plugins/openvswitch/common,quantum/openstack/common}
 	mkdir -p $(QUANTUM_LIBS)/quantum/agent/linux
@@ -40,7 +40,10 @@ agent-dist-xen agent-dist-xen-python26: distclean
 	cp common/{config.py,__init__.py} $(QUANTUM_LIBS)/quantum/plugins/openvswitch/common/
 	cp ../../openstack/__init__.py $(QUANTUM_LIBS)/quantum/openstack/
 	tar -czvpf ${RPM_BUILD_ROOT}/SOURCES/ovs-quantum-agent-${VERSION}.tgz -C $(AGENT_DIST_DIR)/build ovs-quantum-agent-${VERSION}
-	rpmbuild -ba --define "_topdir $(shell pwd)/$(RPM_BUILD_ROOT)" --clean $(AGENT_DIST_DIR)/ovs-quantum-agent-xs_xcp.spec
+	rpmbuild -ba \
+	    --define "_unpackaged_files_terminate_build 0" \
+	    --define "_topdir $(shell pwd)/$(RPM_BUILD_ROOT)" \
+	    --clean $(AGENT_DIST_DIR)/ovs-quantum-agent-xs_xcp.spec
 	@echo "Agent package created: ovs_quantum_agent/build/rpm/RPMS/noarch/ovs-quantum-agent-${VERSION}-1.noarch.rpm"
 	@echo "See README for installation details"
 
