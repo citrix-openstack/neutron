@@ -100,9 +100,12 @@ class SecurityGroupAgentRpcMixin(object):
         LOG.debug(_("Init firewall settings (driver=%s)"), firewall_driver)
         self.firewall = importutils.import_object(firewall_driver)
 
-    def prepare_devices_filter(self, device_ids):
-        if not device_ids:
+    def prepare_devices_filter(self, devices):
+        if not devices:
             return
+
+        device_ids = set(vif_uuid for (_, vif_uuid) in devices)
+
         LOG.info(_("Preparing filters for devices %s"), device_ids)
         devices = self.plugin_rpc.security_group_rules_for_devices(
             self.context, list(device_ids))

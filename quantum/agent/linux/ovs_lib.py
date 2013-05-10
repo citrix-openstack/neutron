@@ -309,9 +309,8 @@ class OVSBridge:
         """
         macs = []
         for port_name in self.get_port_name_list():
-            address = ip_lib.IPDevice(port_name, self.root_helper).link.address
-            if address:
-                macs.append(address)
+            if ip_lib.device_exists(port_name, self.root_helper):
+                macs.append(ip_lib.IPDevice(port_name, self.root_helper).link.address)
         return macs
 
 
