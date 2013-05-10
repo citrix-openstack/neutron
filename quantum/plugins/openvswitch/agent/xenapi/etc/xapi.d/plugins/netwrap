@@ -36,6 +36,8 @@ ALLOWED_CMDS = [
     'ip',
     'ovs-ofctl',
     'ovs-vsctl',
+    'iptables-save',
+    'iptables-restore',
     ]
 
 
