@@ -57,7 +57,7 @@ def load_configuration(exec_name, config_file):
     try:
         exec_dirs = config.get("DEFAULT", "exec_dirs").split(",")
         filters_path = config.get("DEFAULT", "filters_path").split(",")
-        section = 'XENAPI'
+        section = 'xenapi'
         url = config.get(section, "xenapi_connection_url")
         username = config.get(section, "xenapi_connection_username")
         password = config.get(section, "xenapi_connection_password")
